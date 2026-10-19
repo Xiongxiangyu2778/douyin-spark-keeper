@@ -1,0 +1,23 @@
+{
+  "name": "douyin-spark-keeper",
+  "version": "1.1.0",
+  "description": "抖音私信火花自动续期 - 只给有火花的好友发送，支持定时自动运行",
+  "main": "spark.js",
+  "scripts": {
+    "login": "node spark.js --login",
+    "check": "node spark.js --check",
+    "scan": "node spark.js --scan",
+    "send": "node spark.js --dump"
+  },
+  "dependencies": {
+    "playwright-core": "^1.47.0"
+  },
+  "keywords": [
+    "douyin",
+    "spark",
+    "automation",
+    "playwright"
+  ],
+  "license": "MIT",
+  "private": true
+}
