@@ -111,8 +111,11 @@ function pickScript() {
     .map(s => s.trim()).filter(s => s && !s.startsWith('#'));
   let curText = '';
   try { curText = fs.readFileSync(cur, 'utf8'); } catch (e) {}
+  const curLines = curText.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
 
   console.log('\n========= 话术库选择 =========');
+  console.log('📝 当前正在使用：' + curLines.length + ' 句' +
+    (curLines.length ? '，第一句：「' + curLines[0].slice(0, 30) + '」' : '（空！运行时会说今天过得怎么样呀）'));
   files.forEach((f, i) => {
     const p = path.join(dir, f);
     const lines = readLines(p);
@@ -125,6 +128,16 @@ function pickScript() {
   rl.question('输入编号切换（直接回车退出）：', ans => {
     const i = parseInt((ans || '').trim(), 10) - 1;
     if (i >= 0 && i < files.length) {
+      // 如果当前使用文件是被手工改过的（和所有预设都不一样），先备份再覆盖
+      const matchesPreset = files.some(f => {
+        try { return fs.readFileSync(path.join(dir, f), 'utf8') === curText; } catch (e) { return false; }
+      });
+      if (curLines.length && !matchesPreset) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+        const bak = path.join(dir, '备份_手改话术_' + ts.replace('T', '_') + '.txt');
+        fs.writeFileSync(bak, curText, 'utf8');
+        console.log('💾 检测到你手工改过的话术，已备份到：' + path.basename(bak));
+      }
       fs.copyFileSync(path.join(dir, files[i]), cur);
       console.log('\n✅ 已切换为「' + files[i] + '」');
       console.log('   也可以用记事本打开 话术\\当前使用.txt 自己加句子');
@@ -186,6 +199,46 @@ async function openChat(page) {
       await sleep(400);
     }
   }
+}
+
+/** 页面是否还活着：返回 {ok, why} —— 窗口被关 / 标签页崩了 / 被踢到验证页 都算不可用 */
+async function pageAlive(page) {
+  if (!page) return { ok: false, why: '没有可用页面' };
+  try {
+    if (page.isClosed()) return { ok: false, why: '标签页已被关闭' };
+    const url = page.url() || '';
+    if (!/douyin\.com/.test(url)) return { ok: false, why: '页面被跳到 ' + url.slice(0, 60) };
+    await page.evaluate(() => document.body && document.body.childElementCount);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, why: '页面无响应：' + String(e.message || e).split('\n')[0].slice(0, 60) };
+  }
+}
+
+/** 页面不可用就换一个能用的：先捡 context 里现成的抖音页，没有就新开一个 */
+async function ensurePage(ctx, page, force = false) {
+  if (!force) {
+    const st = await pageAlive(page);
+    if (st.ok) return page;
+    log('🔄 页面不可用（' + st.why + '），重新打开私信页 …');
+  } else {
+    log('🔄 主动重开私信页 …');
+  }
+  // ① 先在现有标签里找抖音页（用户可能自己又开了一个）
+  for (const p of ctx.pages()) {
+    if (p === page) continue;
+    if (/douyin\.com/.test(p.url() || '') && (await pageAlive(p)).ok) {
+      log('↪ 复用已有抖音标签页');
+      await openChat(p).catch(() => {});
+      await waitListReady(p, 40).catch(() => {});
+      return p;
+    }
+  }
+  // ② 全都不可用 → 新开一页
+  const p = await ctx.newPage();
+  await openChat(p);
+  await waitListReady(p, 40).catch(() => {});
+  return p;
 }
 
 /* ───────────────── 会话列表 ───────────────── */
@@ -363,35 +416,46 @@ async function findEditor(page) {
 }
 
 async function openConversation(page, name) {
+  const clickAndCheck = async (loc) => {
+    if (!(await loc.count().catch(() => 0))) return false;
+    await loc.first().click({ timeout: 5000 }).catch(() => {});
+    await sleep(1800);
+    return !!(await findEditor(page));
+  };
+
   // 目标（有火花的人）都在列表顶部，先回顶再找
   await scrollList(page, 'top').catch(() => {});
   await sleep(600);
-  // ① 用真实行容器类名定位（2026-10-19 实测）
-  const row = page.locator('div[class*="ConversationItemrowArea"]', { hasText: name }).first();
-  if (await row.count().catch(() => 0)) {
-    await row.click({ timeout: 5000 }).catch(() => {});
-    await sleep(1600);
-    return !!(await findEditor(page));
-  }
-  // ② 会话列表文字直接点
-  const item = page.locator('text=' + name).first();
-  if (await item.count().catch(() => 0) && await item.isVisible().catch(() => false)) {
-    await item.click({ timeout: 5000 }).catch(() => {});
-    await sleep(1600);
-    return !!(await findEditor(page));
-  }
-  const search = page.locator('input[placeholder*="搜索"]').first();
-  if (await search.count().catch(() => 0) && await search.isVisible().catch(() => false)) {
-    await search.click().catch(() => {});
-    await search.fill('').catch(() => {});
-    await search.type(name, { delay: 70 }).catch(() => {});
-    await sleep(2500);
-    const hit = page.locator('text=' + name).first();
-    if (await hit.count().catch(() => 0)) {
-      await hit.click().catch(() => {});
-      await sleep(1800);
-      return !!(await findEditor(page));
+
+  // ① 直接用真实行容器类名（2026-10-19 实测）
+  const rowSel = 'div[class*="ConversationItemrowArea"]';
+  if (await clickAndCheck(page.locator(rowSel, { hasText: name }))) return true;
+
+  // ② 关键修复：每发出一条，那个人的会话就跳到顶部，把剩下的人往下挤，
+  //    等发到第七八个时目标已经滚出可视区（虚拟列表只在可视区渲染 DOM）→ 必须往下找。
+  //    边滚边找，最多 12 屏；找到就顺手滚回顶部，不影响下一位。
+  for (let i = 0; i < 12; i++) {
+    const before = await scrollList(page, 'down').catch(() => -1);
+    await sleep(700);
+    if (await clickAndCheck(page.locator(rowSel, { hasText: name }))) {
+      await scrollList(page, 'top').catch(() => {});
+      return true;
     }
+    if (await listAtBottom(page).catch(() => true)) break;
+    if (before === await scrollList(page, 'down').catch(() => -2)) break;
+  }
+
+  // ③ 列表里确实翻不到 → 用搜索框（抖音私信页顶部的「搜索」input）
+  await scrollList(page, 'top').catch(() => {});
+  const search = page.locator('input[placeholder*="搜索"]').first();
+  if (await search.count().catch(() => 0)) {
+    await search.click({ force: true }).catch(() => {});
+    await sleep(500);
+    await search.fill('').catch(() => {});
+    await search.type(name, { delay: 90 }).catch(() => {});
+    await sleep(2600);
+    if (await clickAndCheck(page.locator(rowSel, { hasText: name }))) return true;
+    if (await clickAndCheck(page.locator('text=' + name))) return true;
   }
   return false;
 }
@@ -401,6 +465,10 @@ async function sendText(page, text) {
   if (!editor) throw new Error('找不到输入框');
   await editor.click();
   await sleep(rnd(300, 900));
+  // 先清空输入框：防止上一次中断时留下的半截草稿被拼在一起
+  await page.keyboard.press('Control+A').catch(() => {});
+  await page.keyboard.press('Delete').catch(() => {});
+  await sleep(rnd(150, 400));
   await page.keyboard.type(text, { delay: Math.round(rnd(45, 110)) });
   await sleep(rnd(400, 1200));
   await page.keyboard.press('Enter');
@@ -420,7 +488,10 @@ async function dump(page, tag) {
     fs.writeFileSync(base + '.html', await page.content(), 'utf8');
     log('📄 诊断文件：' + path.basename(base) + '.png / .html');
     return base;
-  } catch (e) { return null; }
+  } catch (e) {
+    log('ℹ 截图/存证失败（页面可能已经关了）：' + String(e.message || e).split('\n')[0]);
+    return null;
+  }
 }
 
 /* ───────────────── 主流程 ───────────────── */
@@ -431,10 +502,10 @@ async function dump(page, tag) {
   log('========== 抖音续火花 · ' + mode + ' ==========');
 
   if (mode === 'send') {
+    // 不再"发过一个就跳过全天"——逐人去重就够了，重跑只补发还没发的人
     const sent = loadSent();
-    if (sent.length && !FLAG.force) {
-      log('✅ 今天已处理过 ' + sent.length + ' 位好友（' + todayKey() + '），跳过。加 --force 可重发');
-      return;
+    if (sent.length) {
+      log('ℹ 今天已发过 ' + sent.length + ' 位，本次会跳过他们、只发剩下的');
     }
     if (cfg.随机延迟分钟 > 0 && !FLAG.now) {
       const m = rnd(0, cfg.随机延迟分钟);
@@ -453,7 +524,7 @@ async function dump(page, tag) {
   await ctx.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
-  const page = ctx.pages()[0] || await ctx.newPage();
+  let page = ctx.pages()[0] || await ctx.newPage();
 
   try {
     await openChat(page);
@@ -523,13 +594,35 @@ async function dump(page, tag) {
     const sent = loadSent();
     const [gapMin, gapMax] = cfg.每人发送间隔秒 || [20, 60];
     let okCount = 0;
+    let failStreak = 0;   // 连续打不开会话的次数
 
     for (const t of targets) {
       if (sent.some(s => s.name === t.name)) { log('↩ 今天已发给「' + t.name + '」，跳过'); continue; }
+      // 每轮先确认页面还活着 —— 窗口被关/标签页崩掉时否则会一路空转到结束
+      page = await ensurePage(ctx, page);
       const text = pickMessage(pool);
       log('✍ 发送给「' + t.name + '」：' + text);
       const opened = await openConversation(page, t.name);
-      if (!opened) { log('⚠ 打不开与「' + t.name + '」的会话，跳过'); continue; }
+      if (!opened) {
+        failStreak++;
+        log('⚠ 打不开与「' + t.name + '」的会话，跳过（连续失败 ' + failStreak + ' 次）');
+        // 连续 3 次打不开 → 页面多半出了问题（验证码/白屏/被踢下线），重开一次再试
+        if (failStreak >= 3) {
+          if (failStreak >= 6) {
+            const left = targets.filter(x => !sent.some(s => s.name === x.name)).map(x => x.name);
+            log('✗ 连续 ' + failStreak + ' 次打不开会话，不再空转（否则会假装跑完，其实一个都没发）');
+            log('✗ 还没发的人（' + left.length + '）：' + left.join('、'));
+            log('ℹ 常见原因：窗口被关 / 标签页崩了 / 抖音弹了验证码或要重新登录。处理完重跑脚本即可，已发的会自动跳过');
+            await dump(page, '连续失败');
+            break;
+          }
+          log('🔄 连续失败，重开私信页再试 …');
+          page = await ensurePage(ctx, page, true).catch(() => page);
+          failStreak = 0;
+        }
+        continue;
+      }
+      failStreak = 0;
       try {
         await sendText(page, text);
         okCount++;
@@ -542,6 +635,13 @@ async function dump(page, tag) {
       const gap = rnd(gapMin, gapMax);
       log('⏳ 间隔 ' + gap.toFixed(0) + ' 秒再处理下一位');
       await sleep(gap * 1000);
+      // 每 8 个人刷新一次私信页：长开的页面滚久了虚拟列表会"卡住"不再渲染新行，
+      // 表现为目标明明存在却怎么也找不到（2026-10-19 实测，刷一下就全好了）
+      if (okCount && okCount % 8 === 0) {
+        log('🔄 已发 ' + okCount + ' 位，刷新私信页保持列表正常 …');
+        await openChat(page).catch(() => {});
+        await waitListReady(page, 40).catch(() => {});
+      }
     }
 
     await dump(page, '完成');
