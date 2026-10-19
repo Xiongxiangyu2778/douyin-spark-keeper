@@ -1,10 +1,36 @@
-# 登录态与运行数据，绝不上传
+# ── 登录态（等同于账号密码，绝对不能上传）──
 浏览器数据/
 profile/
+browser-data/
+
+# ── 运行产物 ──
 日志/
 状态/
 历史/
-
-# 本地临时文件
+截图/
+调试图/
 *.log
 *.bak
+
+# ── 依赖 ──
+node_modules/
+package-lock.json
+
+# ── 本地环境 ──
+.git/
+.workbuddy/
+.vscode/
+.idea/
+
+# ── 临时文件 ──
+*.tmp
+*.zip
+*.rar
+*.7z
+.DS_Store
+Thumbs.db
+
+# ── 敏感配置 ──
+llm_config.json
+*_token.txt
+*.env
