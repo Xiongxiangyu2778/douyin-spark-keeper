@@ -1,7 +1,16 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-set "NODE=C:\Users\ASUS\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
-if not exist "%NODE%" set "NODE=node"
-set "NODE_PATH=C:\Users\ASUS\.workbuddy\binaries\node\workspace\node_modules"
+
+set "NODE="
+if exist "%ProgramFiles%\nodejs\node.exe" set "NODE=%ProgramFiles%\nodejs\node.exe"
+if defined NODE goto OK
+if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
+if defined NODE goto OK
+for /f "delims=" %%i in ('where node 2^>nul') do if not defined NODE set "NODE=%%i"
+if defined NODE goto OK
+exit /b 1
+
+:OK
+set "NODE_PATH=%~dp0node_modules"
 "%NODE%" "%~dp0spark.js" --dump %*
