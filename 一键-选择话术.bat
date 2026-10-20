@@ -9,6 +9,7 @@ if exist "%ProgramFiles%\nodejs\node.exe" set "NODE=%ProgramFiles%\nodejs\node.e
 if defined NODE goto HAVE_NODE
 if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
 if defined NODE goto HAVE_NODE
+for /d %%d in ("%USERPROFILE%\.workbuddy\binaries\node\versions\*") do if exist "%%d\node.exe" if not defined NODE set "NODE=%%d\node.exe"
 for /f "delims=" %%i in ('where node 2^>nul') do if not defined NODE set "NODE=%%i"
 if defined NODE goto HAVE_NODE
 
