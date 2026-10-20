@@ -9,6 +9,7 @@ if exist "%ProgramFiles%\nodejs\node.exe" set "NODE=%ProgramFiles%\nodejs\node.e
 if defined NODE goto HAVE_NODE
 if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
 if defined NODE goto HAVE_NODE
+for /d %%d in ("%USERPROFILE%\.workbuddy\binaries\node\versions\*") do if exist "%%d\node.exe" if not defined NODE set "NODE=%%d\node.exe"
 for /f "delims=" %%i in ('where node 2^>nul') do if not defined NODE set "NODE=%%i"
 if defined NODE goto HAVE_NODE
 
@@ -38,11 +39,11 @@ exit /b 1
 :HAVE_DEP
 echo   Node : %NODE%
 echo.
-echo 正在注册每天 00:00 的自动运行任务...
+echo 正在注册每天 12:00 的自动运行任务...
 echo.
-schtasks /Create /TN "DouyinSpark" /TR "\"%~dp0run-daily.bat\"" /SC DAILY /ST 00:00 /F
+schtasks /Create /TN "DouyinSpark" /TR "\"%~dp0run-daily.bat\"" /SC DAILY /ST 12:00 /F & powershell -NoProfile -Command "$t=Get-ScheduledTask -TaskName DouyinSpark; $t.Settings.StartWhenAvailable=$true; $t.Settings.DisallowStartIfOnBatteries=$false; $t.Settings.StopIfGoingOnBatteries=$false; Set-ScheduledTask -InputObject $t | Out-Null"
 echo.
-echo 已完成。脚本启动后会再随机等 0~2 分钟才发（见 配置.json 的「随机延迟分钟」），
-echo 不会卡在整点。想换时间，用记事本改本文件里的 00:00。
+echo 已完成。到点若电脑在睡眠/关机，开机后会自动补跑一次（不会错过）。
+echo 电池供电也能运行。想换时间，用记事本改本文件里的 12:00 后重新双击本文件。
 echo.
 pause
